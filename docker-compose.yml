@@ -1,0 +1,166 @@
+services:
+  # ---------- livro_flask ----------
+  livro-flask-db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "123"
+      MYSQL_DATABASE: livro_flask
+    volumes:
+      - livro_flask_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  livro-flask:
+    build: ../livro_flask
+    restart: unless-stopped
+    command: sh -c "flask db upgrade && exec python run.py"
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../livro_flask/.env
+    environment: &livro_flask_env
+      FLASK_ENV: development
+      FLASK_APP: "run.py"
+      IP_HOST: "0.0.0.0"
+      PYTHONUNBUFFERED: "1"
+      MYSQL_HOST: livro-flask-db
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: "123"
+      MYSQL_DATABASE: livro_flask
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: estoque
+      RABBITMQ_PASSWORD: estoque123
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      livro-flask-db:
+        condition: service_healthy
+
+  livro-flask-grpc:
+    build: ../livro_flask
+    restart: unless-stopped
+    command: python grpc_server.py
+    env_file:
+      - ../livro_flask/.env
+    environment: *livro_flask_env
+    depends_on:
+      livro-flask-db:
+        condition: service_healthy
+
+  worker-rabbitmq:
+    build: ../livro_flask
+    restart: unless-stopped
+    command: python worker_rabbitmq.py
+    env_file:
+      - ../livro_flask/.env
+    environment: *livro_flask_env
+    depends_on:
+      livro-flask-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker-kafka:
+    build: ../livro_flask
+    restart: unless-stopped
+    command: python worker_kafka.py
+    env_file:
+      - ../livro_flask/.env
+    environment: *livro_flask_env
+    depends_on:
+      livro-flask-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # ---------- livro_flask_microsservicos ----------
+  pedidos-db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "123"
+      MYSQL_DATABASE: livro_flask_microsservicos
+    volumes:
+      - pedidos_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p123"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  pedidos:
+    build: .
+    restart: unless-stopped
+    command: sh -c "flask db upgrade && exec python run.py"
+    ports:
+      - "8100:8100"
+    env_file:
+      - .env
+    environment:
+      FLASK_ENV: development
+      FLASK_APP: "run.py"
+      IP_HOST: "0.0.0.0"
+      PYTHONUNBUFFERED: "1"
+      MYSQL_HOST: pedidos-db
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: "123"
+      MYSQL_DATABASE: livro_flask_microsservicos
+      LIVRO_FLASK_URL: http://livro-flask:8000
+      LIVRO_FLASK_GRPC_HOST: livro-flask-grpc:50051
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: estoque
+      RABBITMQ_PASSWORD: estoque123
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      pedidos-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # ---------- mensageria ----------
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: estoque
+      RABBITMQ_DEFAULT_PASS: estoque123
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:latest
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+
+volumes:
+  livro_flask_mysql_data:
+  pedidos_mysql_data:
